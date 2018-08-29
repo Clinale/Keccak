@@ -2,8 +2,10 @@ import numpy as np
 import constant
 
 class kec:
-    def __init__(self, r=32):
+    def __init__(self, k='1123456789abcdef', r=25):
+        assert(r<32) #the round can not be more than 32
         self._round = r
+        self.key = key(k, r)
 
     def rot(self, d, s):
         '''
@@ -100,7 +102,7 @@ class kec:
         assert(state.shape == (4, 4))
         rc = constant.RC
         state[0, 3] = state[0, 3] ^ rc[r%63]
-        
+    
     def encode(self, message):
         
         assert(len(message) == 16)
@@ -113,9 +115,14 @@ class kec:
             raise Exception("the message {} must be str or bytes".format(message))
         
         state = np.mat(np.zeros((4,4), dtype="int32"))
+        kmat = np.mat(np.zeros((4,4), dtype="int32"))
+        
+        #init
+        self.fill(kmat, self.key.keys[0])
         for l, m in enumerate(message):
             state[l//4, l%4] = m
-            
+        
+        self.xor(state, kmat)
         for r in range(self._round):
             #print("{}th edcode pi state\n {}".format(r, state))
             self.theta(state)
@@ -129,6 +136,12 @@ class kec:
             self.iota(state, r)
             #print("{}th edcode iota state\n {}".format(r, state))
             
+            self.fill(kmat, self.key.keys[r+1])
+            self.xor(state, kmat)
+
+        #self.fill(kmat, self.key.keys[self._round+1])
+        #self.xor(state, kamt)
+
         print("final state \n {}\n".format(state))
             
         en = bytes()
@@ -155,15 +168,30 @@ class kec:
             raise Exception("the message {} must be str or bytes".format(message))
 
         state = np.mat(np.zeros((4,4), dtype="int32"))
+        kmat = np.mat(np.zeros((4,4), dtype="int32"))
+
+        #init
+        self.fill(kmat, self.key.keys[self._round])
         for l, m in enumerate(message):
             state[l//4, l%4] = m
-
+        
+        self.xor(state, kmat)
         for r in range(self._round-1, -1, -1):
+            #self.fill(kmat, self.key.keys[r])
+            #self.xor(state, kmat)
+            
             self.iota(state, r)
             self.chi(state, constant.SBoxInv)
             self.pi(state, constant.PIINV)
             self.rho(state, 1)
             self.theta(state)
+
+            self.fill(kmat, self.key.keys[r])
+            self.xor(state, kmat)
+            #self.fill(kmat, self.keys[r]
+        
+        #self.fill(kmat, self.key.keys[0])
+        #self.xor(state, kmat)
 
         print("final state \n {}\n".format(state))
 
@@ -179,7 +207,95 @@ class kec:
         print("the decode string: {}\n".format(s))
         '''
         return de
+    
+    def fill(self, kmat, K):
+        assert(len(K)==16)
+        l = 0
+        for k in K:
+            kmat[l//4, l%4] = k
+            l += 1
 
+    def xor(self, state, kmat):
+        row, col = state.shape
+
+        for x in range(row):
+            for y in range(col):
+                state[x, y] ^= kmat[x, y]
+
+
+
+
+class key():
+    def __init__(self, init, r):
+        
+        #init = bytes.fromhex(init)
+        self._initKey = self.check(init)
+        self.keys = self._trans(self._make(r))
+    
+    def check(self, init):
+        assert(type(init)==str)
+        l = len(init)
+        if init[:2] == '0x' or init[:2] == '0X':
+            l = l-2
+            assert(l <= 128)
+            init = init[:2]
+            if (l&1 == 1):
+                init = "0"+init
+                l += 1
+        else:
+            assert(l <= 128)
+            if(l&1==1):
+                init = "0" + init
+                l += 1
+
+        init = (32-l)*'0' + init    #128-bit align
+        return bytes.fromhex(init)
+            
+    def _rot(self, k):
+        '''
+        left shift 99 bits
+        '''
+
+        nleft = 99
+        nright = 128 - nleft
+        left = k >> nright
+        right = k ^ (left << nright)
+        return (right << nleft) + left
+    
+    def _toint(self, k):
+        d = 0
+        for b in k:
+            d = (d<<8) + b
+        return d
+    def _tobytes(self, k):
+        h = hex(k)[2:]
+        l = len(h)
+        return bytes.fromhex((32-l)*'0' + h) #128-bit align
+    
+    def _trans(self, karr):
+        for l, k in enumerate(karr):
+            karr[l] = self._tobytes(k)
+        return karr
+
+    def _make(self, r):
+        #karr = np.zeros(r+1)
+        karr = [0]*(r+1)
+        S = constant.SBox
+
+        K = self._toint(self._initKey)
+
+        for i in range(r+1):
+            K = self._rot(K)
+            left = K>>(120)     #the most 8 bits
+            # [K127, K126, K125, K124] = S([K127, K126, K125, K124])
+            # [K123, K122, K121, K120] = S([K123, K122, K121, K120])
+            sub = (S[left>>4] << 4) + (S[left & (0xf)])
+            K = (sub << 120) + (K ^ (left<<120))
+            # [K29, K28, K27, K26, K25] = [K29, K28, K27, K26, K25] + [round]2
+            K = K ^ (i << 25)
+            karr[i]=K
+        
+        return karr
 
 if __name__ == "__main__":
     kec = kec()
